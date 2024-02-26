@@ -1,0 +1,135 @@
+name: Laravel CI/CD Pipeline
+
+# Triggers the workflow on push or pull request events but only for the master branch
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+# Allows to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    services:
+
+      # MySQL service setup
+      mysql:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: laravel
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=5
+
+      # PostgreSQL service setup
+      postgres:
+        image: postgres:latest
+        env:
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: CICD_testing
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready" --health-interval=10s --health-timeout=5s --health-retries=5
+
+      # Redis service setup
+      redis:
+        image: redis:latest
+        ports:
+          - 6379:6379
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.0'
+        extensions: mbstring, xml, ctype, json, bcmath, curl
+        tools: composer, phpunit
+
+    # Cache Composer Packages
+    - name: Cache Composer Packages
+      uses: actions/cache@v2
+      with:
+        path: |
+          ~/.composer/cache/files
+        key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+        restore-keys: ${{ runner.os }}-composer-
+
+
+    # Install Dependencies
+    - name: Install Dependencies
+      run: composer install --prefer-dist --no-progress --no-suggest
+
+    # Generate Laravel key
+    - name: Generate key
+      run: php artisan key:generate
+
+    # Directory Permissions
+    - name: Directory Permissions
+      run: chmod -R 777 storage bootstrap/cache
+
+    # Setup Environment File
+    - name: Setup Environment File
+      run: cp .env.example .env
+
+    # Run Migrations for testing (MySQL)
+    - name: Run Migrations (MySQL)
+      run: php artisan migrate --force --database=mysql
+
+    # Run Migrations for testing (PostgreSQL)
+    - name: Run Migrations (PostgreSQL)
+      run: php artisan migrate --force --database=pgsql
+
+    # exit maintenance mode
+    - name: deploy app
+      with:
+          host: ${{ secrets.SSH_HOST }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          username: ${{ secrets.SSH_USERNAME }}
+      run: php artisan up
+
+    # test cache
+    - name: Test Cache Operations
+      run: php artisan cache:clear && php artisan config:clear && php artisan route:clear && php artisan view:clear && php artisan cache:clear
+
+    # Execute Tests
+    - name: Execute Tests
+      run: vendor/bin/phpunit
+
+    # AWS S3 Storage Integration
+    - name: Setup AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+    - name: Sync Files to S3
+      run: aws s3 sync public/storage s3://${{ secrets.AWS_S3_BUCKET }}/storage
+
+
+    # Notify Slack on Deployment Status
+    - name: Notify Slack on Deployment Status
+      uses: 8398a7/action-slack@v3
+      with:
+        status: custom
+        fields: workflow,job,commit,repo,ref,author,took
+        custom_payload: |
+          {
+            "attachments": [{
+              "color": "${{ job.status == 'success' ? 'good' : 'danger' }}",
+              "text": `Deployment of ${{ github.repository }} ${{ job.status == 'success' ? 'was successful :tada:' : 'failed :x:' }}`
+            }]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
