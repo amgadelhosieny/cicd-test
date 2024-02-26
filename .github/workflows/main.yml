@@ -91,14 +91,6 @@ jobs:
     - name: Run Migrations (PostgreSQL)
       run: php artisan migrate --force --database=pgsql
 
-    # exit maintenance mode
-    - name: deploy app
-      with:
-          host: ${{ secrets.SSH_HOST }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          username: ${{ secrets.SSH_USERNAME }}
-      run: php artisan up
-
     # test cache
     - name: Test Cache Operations
       run: php artisan cache:clear && php artisan config:clear && php artisan route:clear && php artisan view:clear && php artisan cache:clear
